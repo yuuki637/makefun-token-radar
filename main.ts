@@ -1,7 +1,8 @@
-// Token Radar (model radar-2): a working token-radar-01 entry, Node 22, standard library only.
+// Token Radar (model radar-3): a working token-radar-01 entry, Node 22, standard library only.
 //
-// Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), calibrates the
-// peer multiples from the snapshot's own live-token protocols, ranks every launch candidate,
+// Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits the launch
+// value curve to the snapshot's own live-token protocols, blind-tests it against the pricings
+// it beat, ranks every launch candidate,
 // writes the board to /output/board.json and the dashboard's data to /output/data.js, copies
 // this repository's dashboard/ and screenshots/ into /output, and writes /output/dossier.json
 // with the vendored make.fun library, byte for byte as the scorer rebuilds it.
@@ -87,6 +88,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked, ` +
-    `${radar.peer_count} live peers set the multiples (global median ${radar.global_multiple}x)\n` +
+    `${radar.peer_count} live peers fit the curve (a ${radar.curve.a}, b ${radar.curve.b}); blind test: radar-3 misses by x/${radar.validation.band_factor}, flat 0.25x by x/${radar.validation.scores[0]!.median_factor}\n` +
     `token radar: wrote board.json, data.js, dashboard/ (${dashFiles.length} files), screenshots/ (${shots.length} images) and dossier.json under ${out}\n`,
 );

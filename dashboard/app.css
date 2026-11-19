@@ -182,3 +182,20 @@ tbody tr[data-selected="true"] { background: #17322e; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* radar-3 additions: verdicts, compare pins and bar, own-row highlight */
+.verdict{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.06em;border:1px solid #2b3c52;color:#9fb2c8;background:#131e2c}
+.verdict.farm{color:#0b1512;background:#2fe6c8;border-color:#2fe6c8}
+.verdict.thin{color:#ffd479;border-color:#8a6d2f;background:#241d0d}
+.verdict.skip{color:#ff9d9d;border-color:#7a3436;background:#261113}
+.pin{background:none;border:1px solid #2b3c52;border-radius:999px;color:#9fb2c8;font-size:10.5px;padding:1px 7px;cursor:pointer;margin-left:6px}
+.pin:hover{border-color:#2fe6c8;color:#2fe6c8}
+.pin.on{background:#2fe6c8;color:#0b1512;border-color:#2fe6c8;font-weight:700}
+.comparebar{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch;margin:0 0 14px;padding:12px 14px;border:1px solid #2b3c52;border-radius:12px;background:#0e1622}
+.comparebar .lab{font-size:11px;font-weight:700;letter-spacing:.08em;color:#9fb2c8;align-self:center}
+.cmp-card{flex:1 1 260px;border:1px solid #223041;border-radius:10px;padding:10px 12px;background:#101a29}
+.cmp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:3px 12px;font-size:12.5px;color:#9fb2c8}
+.cmp-grid b{color:#e9eff6}
+.cmp-note{flex:1 1 100%;margin:2px 0 0;font-size:12.5px;color:#9fb2c8}
+table tr.own td{background:rgba(47,230,200,.07);font-weight:600}
