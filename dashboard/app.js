@@ -389,7 +389,7 @@
       why,
       el('div', { class: 'facts' },
         el('span', { class: 'chip', text: 'capital at work: $' + capitalFor(r.tvl_usd) }),
-        el('span', { class: 'chip', text: 'chains: ' + (r.chains && r.chains.length ? r.chains.join(', ') : 'none listed') }),
+        el('span', { class: 'chip', text: 'chains: ' + (!r.chains || !r.chains.length ? 'none listed' : r.chains.length <= 5 ? r.chains.join(', ') : r.chains.slice(0, 5).join(', ') + ' +' + (r.chains.length - 5) + ' more') }),
         el('span', { class: 'chip', text: 'listed: ' + (r.listed_at || 'not reported') })),
       el('section', { class: 'detail-section' },
         el('h3', { text: 'The model, rebuilt from its inputs' }),
