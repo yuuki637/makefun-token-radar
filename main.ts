@@ -1,4 +1,4 @@
-// Token Radar (model radar-3): a working token-radar-01 entry, Node 22, standard library only.
+// Token Radar (model radar-4): a working token-radar-01 entry, Node 22, standard library only.
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits the launch
 // value curve to the snapshot's own live-token protocols, blind-tests it against the pricings
@@ -88,6 +88,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows ranked, ` +
-    `${radar.peer_count} live peers fit the curve (a ${radar.curve.a}, b ${radar.curve.b}); blind test: radar-3 misses by x/${radar.validation.band_factor}, flat 0.25x by x/${radar.validation.scores[0]!.median_factor}\n` +
+    `${radar.peer_count} live peers fit the curve (a ${radar.curve.a}, b ${radar.curve.b}); blind test: radar-4 misses by x/${radar.validation.band_factor}, flat 0.25x by x/${radar.validation.scores[0]!.median_factor}; bootstrap 80% band covered ${radar.validation.bootstrap.coverage_pct}% of held-out peers\n` +
     `token radar: wrote board.json, data.js, dashboard/ (${dashFiles.length} files), screenshots/ (${shots.length} images) and dossier.json under ${out}\n`,
 );

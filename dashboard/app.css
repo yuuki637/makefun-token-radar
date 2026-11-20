@@ -199,3 +199,17 @@ tbody tr[data-selected="true"] { background: #17322e; }
 .cmp-grid b{color:#e9eff6}
 .cmp-note{flex:1 1 100%;margin:2px 0 0;font-size:12.5px;color:#9fb2c8}
 table tr.own td{background:rgba(47,230,200,.07);font-weight:600}
+
+/* radar-4: scatter chart, rank ranges, portfolio builder */
+.rankrange { display: block; color: var(--muted); font-size: 11px; }
+.scatter-wrap { margin: var(--s2) 0 var(--s1); }
+.scatter { width: 100%; height: auto; display: block; }
+.scatter .grid { stroke: #1b2836; stroke-width: 1; }
+.scatter .ax { fill: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+.scatter .peer { fill: #7d99ad; opacity: 0.5; }
+.scatter .boardpt { fill: #2fe6c8; opacity: 0.9; }
+.scatter .curveline { stroke: #2fe6c8; stroke-width: 1.6; opacity: 0.75; }
+.pf-controls { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: end; margin-top: var(--s2); }
+.pf-controls .field input { min-width: 140px; }
+.pf-totals { display: flex; flex-wrap: wrap; gap: var(--s3); font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted); padding-bottom: var(--s1); }
+.pf-totals b { color: var(--text); }

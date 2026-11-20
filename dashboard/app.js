@@ -1,8 +1,9 @@
-// Token Radar's dashboard (model radar-3). It reads window.RADAR, written beside dashboard/ by
+// Token Radar's dashboard (model radar-4). It reads window.RADAR, written beside dashboard/ by
 // main.ts, and renders the ranked board, the fitted curve and the blind test that chose it, the
-// live-token comps behind the fit, a coverage view that accounts for every protocol in the
-// snapshot, and a detail drawer for every protocol with its model equation, value band, farm
-// economics and farm plan. No network: every byte it shows arrived in data.js.
+// bootstrap bands and rank ranges around every price, the live-token comps behind the fit, a
+// coverage view that accounts for every protocol in the snapshot, a portfolio builder over the
+// board's own verdicts, and a detail drawer for every protocol with its model equation, value
+// band, farm economics and farm plan. No network: every byte it shows arrived in data.js.
 (function () {
   'use strict';
 
@@ -14,6 +15,7 @@
   var state = {
     q: '', category: 'all', chain: 'all', minTvl: 0, watchOnly: false, verdict: 'all',
     tab: 'board', sort: 'implied', dir: -1, selected: null, compare: [],
+    budget: 10000, includeThin: false,
   };
 
   var usd0 = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
@@ -83,7 +85,7 @@
     if (params.get('chain')) state.chain = params.get('chain');
     if (params.get('v')) state.verdict = params.get('v');
     if (params.get('watch') === '1') state.watchOnly = true;
-    if (params.get('tab') === 'live' || params.get('tab') === 'coverage') state.tab = params.get('tab');
+    if (['live', 'coverage', 'portfolio'].indexOf(params.get('tab')) >= 0) state.tab = params.get('tab');
   }
   function writeHash() {
     var params = new URLSearchParams();
@@ -178,20 +180,21 @@
   }
 
   function modelStrip() {
-    var own = scoreLine(V.scores, 'radar3');
+    var own = scoreLine(V.scores, 'radar4');
     var flat = scoreLine(V.scores, 'flat');
-    var wf = scoreLine(V.walk_forward.scores, 'radar3');
+    var wf = scoreLine(V.walk_forward.scores, 'radar4');
+    var bs = V.bootstrap;
     return el('div', { class: 'model-strip' },
       el('span', { class: 'formula' }, 'implied = TVL ', el('i', { text: 'x curve multiple' }), ' — the multiple falls as TVL grows (slope ' + DATA.curve.b.toFixed(2) + '), shifted by category'),
-      el('span', { class: 'note', text: 'Blind test, ' + V.folds + '-fold over ' + V.peers + ' live peers: this curve\'s typical miss is ' + fmtFactor(own.median_factor) + ' (' + own.within_2x_pct.toFixed(1) + '% priced within 2x), walk-forward ' + fmtFactor(wf.median_factor) + '; the flat 0.25x misses by ' + fmtFactor(flat.median_factor) + '.' }),
+      el('span', { class: 'note', text: 'Blind test, ' + V.folds + '-fold over ' + V.peers + ' live peers: this curve\'s typical miss is ' + fmtFactor(own.median_factor) + ' (' + own.within_2x_pct.toFixed(1) + '% priced within 2x), walk-forward ' + fmtFactor(wf.median_factor) + '; the flat 0.25x misses by ' + fmtFactor(flat.median_factor) + '. Every price also carries an 80% band from ' + bs.board_refits + ' bootstrap refits, a band that covered ' + bs.coverage_pct.toFixed(1) + '% of held-out peers in the same test.' }),
       el('a', { href: '#model', text: 'How the model works' }));
   }
 
   function exportCsv() {
     var list = sortedRows(visibleRows());
-    var lines = ['rank,name,category,chains,tvl_usd,change_7d_pct,curve_multiple,implied_value_usd,value_low_usd,value_high_usd,verdict,fees_usd,capital_usd'];
+    var lines = ['rank,rank_low,rank_high,name,category,chains,tvl_usd,change_7d_pct,curve_multiple,implied_value_usd,value_low_usd,value_high_usd,verdict,fees_usd,capital_usd'];
     list.forEach(function (r) {
-      var cells = [r.rank, r.name, r.category || '', (r.chains || []).join(';'), r.tvl_usd,
+      var cells = [r.rank, r.rank_low, r.rank_high, r.name, r.category || '', (r.chains || []).join(';'), r.tvl_usd,
         r.change_7d === null ? '' : r.change_7d, r.peer_multiple, r.implied_value_usd,
         r.value_low_usd, r.value_high_usd, r.farm_economics.verdict, r.farm_economics.fees_usd, r.farm_economics.capital_usd];
       lines.push(cells.map(function (c) {
@@ -242,13 +245,14 @@
     }
     var count = state.tab === 'board' ? visibleRows().length + ' of ' + DATA.rows.length + ' rows shown'
       : state.tab === 'live' ? DATA.live.length + ' live-token protocols'
+      : state.tab === 'portfolio' ? 'a portfolio over the board\'s verdicts'
       : DATA.accounting.set_aside.length + ' set aside, ' + DATA.accounting.tokenized + ' already tokenised';
     return el('div', { class: 'controls' },
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       catSel, chainSel, tvlSel, verdictSel,
       el('div', { class: 'field' }, el('span', { class: 'lab', text: 'Watchlist' }), watch),
       el('div', { class: 'field' }, el('span', { class: 'lab', text: 'View' }),
-        el('div', { class: 'tabs' }, tabBtn('board', 'Pre-token board'), tabBtn('live', 'Live comps'), tabBtn('coverage', 'Coverage'))),
+        el('div', { class: 'tabs' }, tabBtn('board', 'Pre-token board'), tabBtn('live', 'Live comps'), tabBtn('coverage', 'Coverage'), tabBtn('portfolio', 'Portfolio'))),
       el('div', { class: 'field' }, el('span', { class: 'lab', text: 'Export' }),
         el('button', { type: 'button', class: 'toggle', text: 'CSV', onclick: exportCsv })),
       el('span', { class: 'count', text: count }));
@@ -295,7 +299,8 @@
           el('span', null, 'TVL ', el('b', { text: fmtUsd(r.tvl_usd) })),
           el('span', null, 'curve x ', el('b', { text: fmtMult(r.peer_multiple) })),
           el('span', null, 'implied ', el('b', { text: fmtUsd(r.implied_value_usd) })),
-          el('span', null, 'band ', el('b', { text: fmtUsd(r.value_low_usd) + ' – ' + fmtUsd(r.value_high_usd) })),
+          el('span', null, '80% band ', el('b', { text: fmtUsd(r.value_low_usd) + ' – ' + fmtUsd(r.value_high_usd) })),
+          el('span', null, 'rank range ', el('b', { text: '#' + r.rank_low + ' – #' + r.rank_high })),
           el('span', null, 'fees ', el('b', { text: '$' + r.farm_economics.fees_usd + ' (' + r.farm_economics.fee_load_pct.toFixed(1) + '%)' })),
           el('span', null, 'verdict ', verdictChip(r))));
     });
@@ -330,7 +335,8 @@
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } },
       },
-        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', { class: 'num' }, String(r.rank),
+          r.rank_high > r.rank_low ? el('span', { class: 'sub rankrange', text: r.rank_low + '–' + r.rank_high }) : null),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
           el('span', { class: 'sub' },
@@ -350,7 +356,7 @@
     });
     return el('div', { class: 'panel' }, el('div', { class: 'table-wrap' },
       el('table', null,
-        el('caption', { class: 'sub', text: 'Pre-token protocols by implied launch value. Select any row for its model equation, value band and farm plan; pin two rows to compare them.' }),
+        el('caption', { class: 'sub', text: 'Pre-token protocols by implied launch value. The small range under a rank is where that rank moves across ' + V.bootstrap.board_refits + ' bootstrap refits of the curve. Select any row for its model equation, 80% band and farm plan; pin two rows to compare them.' }),
         el('thead', null, el('tr', null,
           sortHeader('implied', 'Rank'), sortHeader('name', 'Protocol'), sortHeader('tvl', 'TVL'),
           sortHeader('growth', '7d'), sortHeader('age', 'Age'), sortHeader('multiple', 'Curve x'),
@@ -407,7 +413,7 @@
   function scoreTable(caption, scores) {
     var tbody = el('tbody');
     scores.forEach(function (s) {
-      tbody.appendChild(el('tr', s.key === 'radar3' ? { class: 'own' } : null,
+      tbody.appendChild(el('tr', s.key === 'radar4' ? { class: 'own' } : null,
         el('td', { text: s.label }),
         el('td', { class: 'num', text: fmtFactor(s.median_factor) }),
         el('td', { class: 'num', text: s.within_2x_pct.toFixed(1) + '%' })));
@@ -417,6 +423,92 @@
       el('thead', null, el('tr', null,
         el('th', { scope: 'col', text: 'Pricing' }), el('th', { scope: 'col', text: 'Typical miss' }), el('th', { scope: 'col', text: 'Within 2x' }))),
       tbody);
+  }
+
+  function scatterChart() {
+    var W = 660, H = 370, L = 58, R = 12, T = 12, B = 36;
+    var xs = [], ys = [];
+    DATA.peers.forEach(function (p) { xs.push(Math.log10(p.t)); ys.push(Math.log10(p.m)); });
+    DATA.rows.forEach(function (r) { xs.push(Math.log10(r.tvl_usd)); ys.push(Math.log10(r.implied_value_usd)); });
+    var x0 = Math.floor(Math.min.apply(null, xs)), x1 = Math.ceil(Math.max.apply(null, xs));
+    var y0 = Math.floor(Math.min.apply(null, ys)), y1 = Math.ceil(Math.max.apply(null, ys));
+    function X(v) { return (L + (v - x0) / (x1 - x0) * (W - L - R)).toFixed(1); }
+    function Y(v) { return (T + (y1 - v) / (y1 - y0) * (H - T - B)).toFixed(1); }
+    var s = '<svg class="scatter" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Log-log scatter: live peers, the fitted curve, and the board\'s implied values">';
+    var gx, gy;
+    for (gx = x0; gx <= x1; gx++) {
+      s += '<line x1="' + X(gx) + '" y1="' + T + '" x2="' + X(gx) + '" y2="' + (H - B) + '" class="grid"/>' +
+        '<text x="' + X(gx) + '" y="' + (H - 16) + '" class="ax" text-anchor="middle">' + fmtUsd(Math.pow(10, gx)) + '</text>';
+    }
+    for (gy = y0; gy <= y1; gy++) {
+      s += '<line x1="' + L + '" y1="' + Y(gy) + '" x2="' + (W - R) + '" y2="' + Y(gy) + '" class="grid"/>' +
+        '<text x="' + (L - 6) + '" y="' + (Number(Y(gy)) + 3) + '" class="ax" text-anchor="end">' + fmtUsd(Math.pow(10, gy)) + '</text>';
+    }
+    var a10 = DATA.curve.a / Math.LN10;
+    s += '<line x1="' + X(x0) + '" y1="' + Y(a10 + DATA.curve.b * x0) + '" x2="' + X(x1) + '" y2="' + Y(a10 + DATA.curve.b * x1) + '" class="curveline"/>';
+    DATA.peers.forEach(function (p) { s += '<circle cx="' + X(Math.log10(p.t)) + '" cy="' + Y(Math.log10(p.m)) + '" r="2.4" class="peer"/>'; });
+    DATA.rows.forEach(function (r) { s += '<circle cx="' + X(Math.log10(r.tvl_usd)) + '" cy="' + Y(Math.log10(r.implied_value_usd)) + '" r="2.8" class="boardpt"/>'; });
+    s += '<text x="' + (W / 2) + '" y="' + (H - 2) + '" class="ax" text-anchor="middle">TVL (log scale)</text>';
+    s += '<text x="12" y="' + (H / 2) + '" class="ax" text-anchor="middle" transform="rotate(-90 12 ' + (H / 2) + ')">market cap / implied value (log scale)</text>';
+    s += '</svg>';
+    var holder = el('div', { class: 'scatter-wrap' });
+    holder.innerHTML = s;
+    return el('div', null, holder,
+      el('p', { class: 'sub', text: 'The fit, drawn: pale dots are the ' + DATA.peer_count + ' live peers (TVL against recorded market cap), the line is the fitted curve, and the bright dots are the board\'s ' + DATA.rows.length + ' implied values read off it. The cloud\'s width around the line is why every price carries a band.' }));
+  }
+
+  function portfolioView() {
+    var ordered = DATA.rows.filter(function (r) {
+      return r.farm_economics.verdict === 'farm' || (state.includeThin && r.farm_economics.verdict === 'thin');
+    }).slice().sort(function (a, b) { return b.implied_value_usd - a.implied_value_usd; });
+    var remaining = state.budget;
+    var picks = [];
+    ordered.forEach(function (r) {
+      var c = r.farm_economics.capital_usd;
+      if (c <= remaining) { picks.push(r); remaining -= c; }
+    });
+    var deployed = state.budget - remaining;
+    var fees = picks.reduce(function (acc, r) { return acc + r.farm_economics.fees_usd; }, 0);
+    var budgetInput = el('input', { type: 'number', id: 'budget', min: '100', step: '100', value: String(state.budget), 'aria-label': 'Portfolio budget in dollars' });
+    budgetInput.addEventListener('change', function () {
+      var v = Number(budgetInput.value);
+      if (isFinite(v) && v >= 100) { state.budget = Math.round(v); render(); }
+    });
+    var tbody = el('tbody');
+    picks.forEach(function (r) {
+      tbody.appendChild(el('tr', { onclick: function () { openDetail(r.slug); } },
+        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', null, el('div', { class: 'name' }, el('b', { text: r.name }),
+          el('span', { class: 'sub', text: (r.category || 'Uncategorised') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 3).join(', ') : 'an unnamed chain') }))),
+        el('td', null, verdictChip(r)),
+        el('td', { class: 'num', text: '$' + r.farm_economics.capital_usd }),
+        el('td', { class: 'num', text: '$' + r.farm_economics.fees_usd.toFixed(2) }),
+        el('td', { class: 'num', text: fmtUsd(r.implied_value_usd) }),
+        el('td', { class: 'num', text: fmtUsd(r.value_low_usd) + ' – ' + fmtUsd(r.value_high_usd) })));
+    });
+    return el('div', null,
+      el('div', { class: 'panel' },
+        el('h2', { text: 'One budget, farmed by the board\'s own rules' }),
+        el('p', { class: 'sub', text: 'A greedy pass over the verdicts: FARM rows in implied-value order' + (state.includeThin ? ', then THIN rows the budget still reaches,' : '') + ' each farmed at the capital its own plan sizes, until the budget runs out. SKIP rows are never picked: their fees eat the position. Select a pick to open its plan.' }),
+        el('div', { class: 'pf-controls' },
+          el('div', { class: 'field' }, el('label', { for: 'budget', text: 'Budget (USD)' }), budgetInput),
+          el('div', { class: 'field' }, el('span', { class: 'lab', text: 'THIN rows' }),
+            el('button', { type: 'button', class: 'toggle', 'aria-pressed': state.includeThin ? 'true' : 'false', text: state.includeThin ? 'Included' : 'Excluded',
+              onclick: function () { state.includeThin = !state.includeThin; render(); } })),
+          el('div', { class: 'pf-totals' },
+            el('span', null, 'deployed ', el('b', { text: '$' + deployed.toLocaleString('en-US') })),
+            el('span', null, 'left over ', el('b', { text: '$' + remaining.toLocaleString('en-US') })),
+            el('span', null, 'plan fees ', el('b', { text: '$' + fees.toFixed(2) + ' (' + (deployed > 0 ? (fees / deployed * 100).toFixed(1) : '0.0') + '% of deployed)' })),
+            el('span', null, 'positions ', el('b', { text: String(picks.length) }))))),
+      picks.length === 0
+        ? el('div', { class: 'panel' }, el('div', { class: 'empty' }, el('h2', { text: 'The budget reaches no FARM row' }), el('p', { text: 'Raise the budget, or include THIN rows, and the builder picks again.' })))
+        : el('div', { class: 'panel' }, el('div', { class: 'table-wrap' },
+          el('table', null,
+            el('caption', { class: 'sub', text: 'The picks, in the order the budget takes them. Capital and fees are each plan\'s own netted economics; the band is the bootstrap 80% band.' }),
+            el('thead', null, el('tr', null,
+              el('th', { scope: 'col', text: 'Rank' }), el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', text: 'Verdict' }),
+              el('th', { scope: 'col', text: 'Capital' }), el('th', { scope: 'col', text: 'Fees' }), el('th', { scope: 'col', text: 'Implied value' }), el('th', { scope: 'col', text: '80% band' }))),
+            tbody))));
   }
 
   function modelSection() {
@@ -439,15 +531,17 @@
       el('div', null,
         el('h2', { text: 'How the model works' }),
         el('p', { class: 'sub', text: 'Model ' + DATA.model_version + '. One function scores every row; no protocol name is special-cased anywhere in it.' })),
+      scatterChart(),
       el('div', { class: 'cols' },
         el('div', null, offsetsTable),
         el('ul', null,
           el('li', null, el('b', { text: 'The curve. ' }), 'Least squares of log market cap on log TVL over ' + DATA.peer_count + ' live-token protocols (CEX set aside, ratios outside 0.002x to 6x dropped): value = e^' + DATA.curve.a.toFixed(2) + ' x TVL^' + DATA.curve.b.toFixed(4) + '. A slope under 1 means the market pays a smaller multiple the larger a protocol already is; a flat multiple hands the giants value they have never traded at.'),
           el('li', null, el('b', { text: 'Category offsets. ' }), 'Each category\'s peers leave residuals around the curve; their median, shrunk toward zero with ' + M.shrink_peers + ' pseudo-peers of weight, shifts the curve for that category. Lending trades cheap for its size, Derivatives rich; a category with no live peers is priced by the bare curve.'),
           el('li', null, el('b', { text: 'Tested, not asserted. ' }), 'The tables below are recomputed from the snapshot on every run of the entry: a ' + V.folds + '-fold blind test (each peer predicted by a fit that never saw it) and a walk-forward split at ' + V.walk_forward.cutoff + ' (fit on ' + V.walk_forward.train + ' earlier listings, predict ' + V.walk_forward.test + ' later ones).'),
-          el('li', null, el('b', { text: 'Terms the test rejected. ' }), 'Growth (7-day TVL change), maturity (age) and breadth (chain count) adjustments were each put through the same blind test on top of the curve and none of them earned its place, so this model does not use them. They are still printed on every row as information, never as price.'),
+          el('li', null, el('b', { text: 'Terms the test rejected. ' }), 'Growth (7-day TVL change), maturity (age) and breadth (chain count) adjustments were each put through the same blind test on top of the curve and none of them earned its place, so this model does not use them. They are still printed on every row as information, never as price. A Huber robust fit, per-category slopes and an ensemble with the old median model were tested the same way and also lost to plain least squares.'),
+          el('li', null, el('b', { text: 'Bands and rank ranges. ' }), 'The peers are resampled with replacement and the curve refitted ' + V.bootstrap.board_refits + ' times (a seeded bootstrap, so the page never changes between runs). A row\'s band is the middle ' + V.bootstrap.nominal_pct + '% of its predictive distribution across the refits; its rank range is where its rank lands across them. Inside the blind test the same band, fitted without the peer it priced, covered ' + V.bootstrap.coverage_pct.toFixed(1) + '% of held-out peers: close to its name, and printed here rather than rounded up to it.'),
           el('li', null, el('b', { text: 'Verdicts. ' }), 'Each farm plan nets its own fees: skip when fees would eat over ' + (M.farm_skip_fee_load * 100) + '% of the capital at work, thin when they pass ' + (M.farm_thin_fee_load * 100) + '%, the comp set is thin, or the launch prices under ' + fmtUsd(M.farm_thin_value) + '.'),
-          el('li', null, el('b', { text: 'Honest limits. ' }), 'The snapshot records no revenue, no users and no token supply, so this model prices size and comps only. Its own blind test says a typical row is within ' + fmtFactor(V.band_factor) + ' of the mark either way; every row carries that band. It says what a launch would be worth if the record stayed as it is; it does not predict that a token will be issued.'))),
+          el('li', null, el('b', { text: 'Honest limits. ' }), 'The snapshot records no revenue, no users and no token supply, so this model prices size and comps only. Its own blind test says a typical row is within ' + fmtFactor(V.band_factor) + ' of the mark either way, and its 80% band is honestly wide: a launch price is a distribution, not a number. It says what a launch would be worth if the record stayed as it is; it does not predict that a token will be issued.'))),
       el('div', { class: 'cols' },
         el('div', null, scoreTable('Blind test: ' + V.folds + '-fold over ' + V.peers + ' live peers. The board\'s pricing is the last row.', V.scores)),
         el('div', null, scoreTable('Walk-forward: fit on peers listed before ' + V.walk_forward.cutoff + ', predict the ' + V.walk_forward.test + ' listed since.', V.walk_forward.scores))));
@@ -482,7 +576,8 @@
       el('b', { text: r.name }), ' ranks ', el('b', { text: '#' + r.rank }), ' of ' + DATA.rows.length + ': ',
       'at ' + fmtUsd(r.tvl_usd) + ' of TVL the fitted curve\'s base multiple is ' + fmtMult(r.base_multiple) + ', and the ' +
       (r.category || 'market-wide') + ' offset from ' + r.peer_count + ' live peer' + (r.peer_count === 1 ? '' : 's') +
-      ' (' + confText + ') shifts it to ' + fmtMult(r.peer_multiple) + '. The blind test\'s typical error puts the launch between ' +
+      ' (' + confText + ') shifts it to ' + fmtMult(r.peer_multiple) + '. Across ' + V.bootstrap.board_refits + ' bootstrap refits its rank holds between #' +
+      r.rank_low + ' and #' + r.rank_high + ', and the 80% band puts the launch between ' +
       fmtUsd(r.value_low_usd) + ' and ' + fmtUsd(r.value_high_usd) + '.');
     var eq = el('div', { class: 'equation' },
       el('div', null, el('span', { text: 'TVL' }), el('b', { text: fmtUsd(r.tvl_usd) })),
@@ -490,7 +585,8 @@
       el('div', null, el('span', { text: 'x category offset (' + (r.category || 'none') + ', n=' + r.peer_count + ')' }), el('b', { text: fmtMult(r.offset_multiplier) })),
       el('div', null, el('span', { text: '= effective multiple' }), el('b', { text: fmtMult(r.peer_multiple) })),
       el('div', { class: 'total' }, el('span', { text: 'Implied launch value' }), el('b', { text: fmtUsd(r.implied_value_usd) })),
-      el('div', null, el('span', { text: 'blind-test band (' + fmtFactor(V.band_factor) + ')' }), el('b', { text: fmtUsd(r.value_low_usd) + ' – ' + fmtUsd(r.value_high_usd) })));
+      el('div', null, el('span', { text: 'bootstrap 80% band (' + V.bootstrap.board_refits + ' refits)' }), el('b', { text: fmtUsd(r.value_low_usd) + ' – ' + fmtUsd(r.value_high_usd) })),
+      el('div', null, el('span', { text: 'rank across the refits' }), el('b', { text: '#' + r.rank_low + ' – #' + r.rank_high })));
     var steps = el('ol', { class: 'steps' }, r.farm_steps.map(function (s) { return el('li', { text: s }); }));
     return el('aside', { class: 'detail', role: 'dialog', 'aria-label': r.name + ' detail' },
       el('div', { class: 'detail-head' },
@@ -528,6 +624,8 @@
       kids.push(boardTable());
     } else if (state.tab === 'live') {
       kids.push(liveTable());
+    } else if (state.tab === 'portfolio') {
+      kids.push(portfolioView());
     } else {
       kids.push(coverageView());
     }

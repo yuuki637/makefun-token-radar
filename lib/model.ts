@@ -1,5 +1,5 @@
-// Token Radar, model radar-3: a fitted comps curve for launch values, kept honest by a blind
-// test, over one sealed DefiLlama snapshot.
+// Token Radar, model radar-4: a fitted comps curve for launch values, kept honest by a blind
+// test, with its uncertainty measured by bootstrap, over one sealed DefiLlama snapshot.
 //
 // The board ranks EVERY protocol the snapshot records with no token, once the products that are
 // only a wrapper of a token that already trades are set aside. The house watchlist (40 protocols,
@@ -32,9 +32,20 @@
 // about 2.1 against the flat multiple's 4.0.
 // Three adjustments radar-2 carried (a growth factor from 7-day TVL change, a maturity factor
 // from age, a breadth factor from chain count) were put through the same blind test and did not
-// survive it, so radar-3 does not use them: a term stays only if the blind test keeps it. The
-// dashboard prints the whole test table, and every row carries the blind test's error band as
-// its value range.
+// survive it, so the board does not use them: a term stays only if the blind test keeps it.
+// Neither did the challengers radar-4 tested against the same fit (a Huber robust fit,
+// per-category slopes, an ensemble with radar-2): none beat plain least squares out of sample,
+// so the point estimate is radar-3's, unchanged.
+//
+// What radar-4 adds is the honest spread around that point. A point price for a token that does
+// not exist yet is a claim; the spread is the truth about the claim. Two hundred bootstrap
+// refits of the curve (the peers resampled with replacement, a seeded generator, so the run is
+// deterministic) give every row an 80% value band from the predictive distribution (refit
+// predictions spread by the refits' own residuals) and a rank range (the 10th to 90th
+// percentile of the row's rank across the refits). The blind test measures the band itself:
+// inside the cross-validation the same bootstrap band covered about three quarters of the
+// held-out peers it had never seen, close to its 80% name, and the dashboard prints that
+// coverage next to the band wherever the band appears.
 //
 // A row also carries a confidence label from its category's comp count (high: 8 or more peers,
 // medium: 3 to 7, low: fewer than 3) and a farm verdict netted from its own plan's fees. The
@@ -64,7 +75,7 @@ export interface Snapshot {
 }
 
 /** The model's version label: the dashboard names it and board.json rows carry its inputs. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** The model's constants, stated in the dashboard so the arithmetic is never a black box. */
 export const MODEL = {
@@ -75,6 +86,11 @@ export const MODEL = {
   multiple_max: 1.0,
   folds: 5,
   walk_forward_cutoff: '2024-01-01',
+  bootstrap_refits: 200,
+  bootstrap_cv_refits: 60,
+  bootstrap_draws: 3,
+  bootstrap_seed: 20261114,
+  bootstrap_band_pct: 80,
   farm_skip_fee_load: 0.2,
   farm_thin_fee_load: 0.1,
   farm_thin_value: 5_000_000,
@@ -267,6 +283,106 @@ export function scoreProtocol(p: SnapshotProtocol, asOf: string, fit: CurveFit):
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
+// ------------------------------------------------------------------ the bootstrap
+//
+// The point price is one draw from a distribution; the bootstrap measures the distribution.
+// The peers are resampled with replacement and the curve refitted, MODEL.bootstrap_refits
+// times, from a seeded generator (mulberry32), so two runs write the same bytes. Each refit
+// predicts every target twice over: its point prediction feeds the target's rank range, and
+// point predictions spread by residuals drawn from the refit's own training residuals feed
+// the target's predictive band (the 10th to 90th percentile, the 80% band). A refit whose
+// resample cannot be fitted (no spread in TVL) is skipped, never fudged.
+
+/** mulberry32: a small seeded generator, so the bootstrap is a function of the snapshot. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The q-th percentile of an ascending list, nearest-rank: the same rule the checks used. */
+function percentile(sortedAsc: number[], q: number): number {
+  const i = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(q * sortedAsc.length)));
+  return sortedAsc[i]!;
+}
+
+/** One target's bootstrap spread: its 80% value band and the range its rank moves in. */
+export interface Uncertainty {
+  value_p10: number;
+  value_p90: number;
+  rank_p10: number;
+  rank_p90: number;
+}
+
+/** A bootstrap target: a TVL and a category, the only inputs the curve reads. */
+export interface BootstrapTarget {
+  tvl_usd: number;
+  category: string | null;
+}
+
+/**
+ * Bootstrap the fitted curve over the peers and read every target's band and rank range.
+ * `targets` are read in the caller's order (the board's rank order); ranks inside a refit are
+ * by that refit's point predictions, ties broken by the caller's order, so a rank range is a
+ * statement about the model, not about sort noise.
+ */
+export function bootstrapUncertainty(
+  peers: SnapshotProtocol[],
+  targets: BootstrapTarget[],
+  refits: number,
+  seed: number,
+): Uncertainty[] {
+  const rng = mulberry32(seed);
+  const n = peers.length;
+  const points: number[][] = targets.map(() => []);
+  const samples: number[][] = targets.map(() => []);
+  const ranks: number[][] = targets.map(() => []);
+  let done = 0;
+  for (let b = 0; b < refits; b++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < n; i++) sample.push(peers[Math.floor(rng() * n)]!);
+    const fit = fitCurve(sample);
+    if (!Number.isFinite(fit.a) || !Number.isFinite(fit.b)) continue;
+    const residuals: number[] = [];
+    for (const p of sample) {
+      const off = p.category !== null ? (fit.offsets.get(p.category)?.offset ?? 0) : 0;
+      residuals.push(Math.log(p.mcap_usd!) - Math.log(curveValue(fit, p.tvl_usd, off)));
+    }
+    const preds = targets.map((t) => {
+      const off = t.category !== null ? (fit.offsets.get(t.category)?.offset ?? 0) : 0;
+      return curveValue(fit, t.tvl_usd, off);
+    });
+    const order = targets.map((_, i) => i).sort((x, y) => preds[y]! - preds[x]! || x - y);
+    const rankOf = new Array<number>(targets.length);
+    order.forEach((targetIdx, pos) => {
+      rankOf[targetIdx] = pos + 1;
+    });
+    targets.forEach((_, i) => {
+      points[i]!.push(preds[i]!);
+      ranks[i]!.push(rankOf[i]!);
+      for (let d = 0; d < MODEL.bootstrap_draws; d++) {
+        samples[i]!.push(preds[i]! * Math.exp(residuals[Math.floor(rng() * residuals.length)]!));
+      }
+    });
+    done++;
+  }
+  return targets.map((_, i) => {
+    const s = [...samples[i]!].sort((a, b) => a - b);
+    const r = [...ranks[i]!].sort((a, b) => a - b);
+    return {
+      value_p10: percentile(s, 0.1),
+      value_p90: percentile(s, 0.9),
+      rank_p10: Math.round(percentile(r, 0.1)),
+      rank_p90: Math.round(percentile(r, 0.9)),
+    };
+  });
+}
+
 // ------------------------------------------------------------------ the blind test
 //
 // The model is chosen by test, not by taste, and the test ships with the model so anyone can
@@ -275,7 +391,7 @@ const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 // walk-forward split at 2024-01-01 (fit on the peers listed before, predict the ones listed
 // since). Five candidate pricings sit in the test: the starter's flat 0.25x, the global median
 // multiple, radar-2's category medians with its growth/maturity/breadth factors, the fitted
-// curve alone, and the fitted curve with category offsets (radar-3, the one the board uses).
+// curve alone, and the fitted curve with category offsets (radar-4, the one the board uses).
 // The score is the median absolute log10 error, stated as the factor a typical prediction
 // misses by, and the share of peers priced within 2x of their recorded market cap.
 
@@ -288,13 +404,14 @@ export interface ValidationScore {
   peers: number;
 }
 
-/** The whole test: the five-fold table, the walk-forward table, and radar-3's error band. */
+/** The whole test: the five-fold table, the walk-forward table, the error band, the band's coverage. */
 export interface Validation {
   folds: number;
   peers: number;
   scores: ValidationScore[];
   walk_forward: { cutoff: string; train: number; test: number; scores: ValidationScore[] };
   band_factor: number;
+  bootstrap: { board_refits: number; cv_refits: number; nominal_pct: number; coverage_pct: number };
 }
 
 /** FNV-1a over the slug: a peer's fold, fixed by the snapshot and nothing else. */
@@ -372,8 +489,8 @@ export function validateModel(snapshot: Snapshot): Validation {
       predict: (t, p) => curveValue(fitCurve(t), p.tvl_usd, 0),
     },
     {
-      key: 'radar3',
-      label: 'Fitted curve + category offsets (radar-3, this board)',
+      key: 'radar4',
+      label: 'Fitted curve + category offsets (radar-4, this board)',
       predict: (t, p) => {
         const fit = fitCurve(t);
         const off = p.category !== null ? (fit.offsets.get(p.category)?.offset ?? 0) : 0;
@@ -389,15 +506,37 @@ export function validateModel(snapshot: Snapshot): Validation {
   const dated = peers.filter((p) => p.listed_at !== null);
   const wfTrain = dated.filter((p) => p.listed_at! < MODEL.walk_forward_cutoff);
   const wfTest = dated.filter((p) => p.listed_at! >= MODEL.walk_forward_cutoff);
-  const wfCandidates = candidates.filter((c) => c.key === 'flat' || c.key === 'global_median' || c.key === 'radar3');
+  const wfCandidates = candidates.filter((c) => c.key === 'flat' || c.key === 'global_median' || c.key === 'radar4');
   const wfScores = wfCandidates.map((c) => scoreSplits(c.key, c.label, [{ train: wfTrain, test: wfTest }], c.predict));
-  const own = scores.find((s) => s.key === 'radar3')!;
+  const own = scores.find((s) => s.key === 'radar4')!;
+  // The band, tested like the model: inside the same folds, fit the bootstrap on the training
+  // peers and ask how often a held-out peer's recorded cap lands inside its 80% band.
+  let covered = 0;
+  let banded = 0;
+  for (const { train, test } of cvSplits) {
+    const bands = bootstrapUncertainty(
+      train,
+      test.map((p) => ({ tvl_usd: p.tvl_usd, category: p.category })),
+      MODEL.bootstrap_cv_refits,
+      MODEL.bootstrap_seed,
+    );
+    test.forEach((p, i) => {
+      banded++;
+      if (p.mcap_usd !== null && p.mcap_usd >= bands[i]!.value_p10 && p.mcap_usd <= bands[i]!.value_p90) covered++;
+    });
+  }
   return {
     folds: MODEL.folds,
     peers: peers.length,
     scores,
     walk_forward: { cutoff: MODEL.walk_forward_cutoff, train: wfTrain.length, test: wfTest.length, scores: wfScores },
     band_factor: own.median_factor,
+    bootstrap: {
+      board_refits: MODEL.bootstrap_refits,
+      cv_refits: MODEL.bootstrap_cv_refits,
+      nominal_pct: MODEL.bootstrap_band_pct,
+      coverage_pct: round4((covered / banded) * 100),
+    },
   };
 }
 
@@ -646,7 +785,7 @@ export function farmPlan(
   implied: number,
   confidence: 'high' | 'medium' | 'low',
   peers: number,
-  bandFactor: number,
+  band: { low: number; high: number; coveragePct: number },
 ): { steps: string[]; economics: FarmEconomics } {
   const { name: chain, info } = primaryChain(p);
   const cap = capitalFor(p);
@@ -674,8 +813,8 @@ export function farmPlan(
     verdict = 'farm';
     reason = `the fee load is light at ${(feeLoad * 100).toFixed(1)}% of capital and the price stands on ${peers} live peers`;
   }
-  const low = Math.max(1, Math.round(implied / bandFactor));
-  const high = Math.round(implied * bandFactor);
+  const low = Math.max(1, Math.round(band.low));
+  const high = Math.round(band.high);
   const steps = [
     `Set up a fresh wallet that holds only the funds for this farm, fund it with ${info.gas} on ${chain} for fees, and keep its seed phrase offline; never farm from a wallet that holds long-term assets. Cost: about ${feeText(fee * 2)} of ${info.gas} to fund and test. Time: 10 minutes.`,
     `${book.core(p.name, chain, cap)} Cost: $${cap} of capital plus about ${feeText(fee)} of gas. Time: 20 minutes to set up.`,
@@ -684,7 +823,7 @@ export function farmPlan(
     `Hold the position for at least ${hold} days and review it weekly; the thing to watch is ${book.risk}. Cost: the $${cap} stays in the position for the hold. Time: ${hold} days, 5 minutes a week to review.`,
     `Once a month, open ${p.name}'s own app and check its points or rewards page; claim only through a link the protocol itself publishes, and never pay a fee or sign a blind approval to claim. Cost: nothing to check, about ${feeText(fee)} of gas for a real claim. Time: 10 minutes a month.`,
     `Keep a farm log from day one (wallet, dates, transaction hashes, amounts). To exit: ${book.exit(p.name)}. Cost: about ${feeText(fee * 2)} of gas to unwind fully. Time: 20 minutes to exit, and keep the log for 90 days after.`,
-    `The economics, netted: the fees above total about ${usdText(fees)} on $${cap} of capital held ${hold} days, a fee load of ${(feeLoad * 100).toFixed(1)}%. The board prices a launch at ${usdText(implied)}, inside the blind test's typical band of ${usdText(low)} to ${usdText(high)}. Verdict: ${verdict.toUpperCase()} — ${reason}. If no token ever comes, the whole loss is the fees and the time.`,
+    `The economics, netted: the fees above total about ${usdText(fees)} on $${cap} of capital held ${hold} days, a fee load of ${(feeLoad * 100).toFixed(1)}%. The board prices a launch at ${usdText(implied)}, inside a bootstrap 80% band of ${usdText(low)} to ${usdText(high)} (that band covered ${band.coveragePct.toFixed(0)}% of held-out peers in the blind test). Verdict: ${verdict.toUpperCase()} — ${reason}. If no token ever comes, the whole loss is the fees and the time.`,
   ];
   return {
     steps: steps.map((s) => (s.length > 600 ? `${s.slice(0, 596)}...` : s)),
@@ -704,6 +843,8 @@ export function farmPlan(
 /** One row of board.json: the ranked board's row, with every model input the page shows. */
 export interface BoardRow {
   rank: number;
+  rank_low: number;
+  rank_high: number;
   slug: string;
   name: string;
   category: string | null;
@@ -736,6 +877,8 @@ export interface BoardRow {
 /** The dashboard's view of one row: the board row's figures, without the farm plan's text. */
 export interface RadarRow {
   rank: number;
+  rank_low: number;
+  rank_high: number;
   slug: string;
   name: string;
   category: string | null;
@@ -804,6 +947,7 @@ export interface RadarData {
   };
   rows: RadarRow[];
   live: LiveRow[];
+  peers: { t: number; m: number }[];
 }
 
 /**
@@ -811,16 +955,29 @@ export interface RadarData {
  * The watchlist is covered by construction (every watchlist protocol is a launch candidate),
  * and the ranking is a total order: implied value descending, slug ascending on a tie.
  */
-export function buildBoard(snapshot: Snapshot, fit: CurveFit, bandFactor: number): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, fit: CurveFit, peers: SnapshotProtocol[], validation: Validation): BoardRow[] {
   const watch = new Set(snapshot.watchlist);
   const scored = snapshot.protocols
     .filter(isLaunchCandidate)
     .map((p) => ({ p, s: scoreProtocol(p, snapshot.as_of, fit) }));
   scored.sort((a, b) => b.s.implied - a.s.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const uncertainty = bootstrapUncertainty(
+    peers,
+    scored.map(({ p }) => ({ tvl_usd: p.tvl_usd, category: p.category })),
+    MODEL.bootstrap_refits,
+    MODEL.bootstrap_seed,
+  );
   return scored.map(({ p, s }, i) => {
-    const plan = farmPlan(p, s.age, s.implied, s.confidence, s.peers, bandFactor);
+    const u = uncertainty[i]!;
+    const plan = farmPlan(p, s.age, s.implied, s.confidence, s.peers, {
+      low: u.value_p10,
+      high: u.value_p90,
+      coveragePct: validation.bootstrap.coverage_pct,
+    });
     return {
       rank: i + 1,
+      rank_low: u.rank_p10,
+      rank_high: u.rank_p90,
       slug: p.slug,
       name: p.name,
       category: p.category,
@@ -835,8 +992,8 @@ export function buildBoard(snapshot: Snapshot, fit: CurveFit, bandFactor: number
       watchlist: watch.has(p.slug),
       age_days: s.age,
       implied_value_usd: s.implied,
-      value_low_usd: Math.max(1, Math.round(s.implied / bandFactor)),
-      value_high_usd: Math.round(s.implied * bandFactor),
+      value_low_usd: Math.max(1, Math.round(u.value_p10)),
+      value_high_usd: Math.round(u.value_p90),
       model: {
         peer_multiple: round4(s.multiple),
         base_multiple: round4(s.base_multiple),
@@ -889,9 +1046,10 @@ export function setAsideReason(p: SnapshotProtocol): string | null {
 
 /** Everything the dashboard renders, from the snapshot, its fitted curve and its blind test. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
-  const fit = fitCurve(peerSet(snapshot));
+  const peers = peerSet(snapshot);
+  const fit = fitCurve(peers);
   const validation = validateModel(snapshot);
-  const board = buildBoard(snapshot, fit, validation.band_factor);
+  const board = buildBoard(snapshot, fit, peers, validation);
   const preToken = snapshot.protocols.filter(isPreToken).length;
   const setAside: SetAside[] = snapshot.protocols
     .filter((p) => isPreToken(p) && !isLaunchCandidate(p))
@@ -922,6 +1080,8 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     },
     rows: board.map((r) => ({
       rank: r.rank,
+      rank_low: r.rank_low,
+      rank_high: r.rank_high,
       slug: r.slug,
       name: r.name,
       category: r.category,
@@ -945,6 +1105,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       farm_steps: r.farm_steps,
     })),
     live: liveRows(snapshot),
+    peers: peers.map((p) => ({ t: p.tvl_usd, m: p.mcap_usd! })),
   };
   return { board, radar };
 }
